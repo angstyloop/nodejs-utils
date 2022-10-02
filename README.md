@@ -3,6 +3,16 @@
 Utilities missing from NodeJS that require NodeJS built-in libraries and thus
 don't belong in the "js-utils" repo. 
 
+# Note on recursion with the fs module.
+
+Especially when recursively walking the filesystem and removing files, changing
+their ownership, or changing their permission bits, it is important to be
+aware of the vulnerability to TOCTOU attacks you are creating.
+
+Please read about [these concerns](https://github.com/nodejs/tooling/issues/59)
+related to [TOCTOU attacks](https://en.wikipedia.org/wiki/Time-of-check_to_time-of-use)
+before using this code, and don't use it in production code.
+
 # Contents
 
 ## rmDirRecursive(root, target)
