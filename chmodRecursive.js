@@ -1,7 +1,7 @@
 #! /usr/bin/env node
 
 const { readdirSync, lstatSync, isDirectory, chmodSync } = require('fs');
-const { join, posix: { basename } } = require('path');
+const { join } = require('path');
 
 /** List subdirectories of target directory @d. NOT recursive.
  * @param dir - (string) Target directory.
