@@ -1,17 +1,8 @@
 #! /usr/bin/env node
 
-const { readdirSync, lstatSync, isDirectory, chmodSync } = require('fs');
+const { readdirSync, chmodSync } = require('fs');
 const { join } = require('path');
-
-/** List subdirectories of target directory @d. NOT recursive.
- * @param dir - (string) Target directory.
- * @return (string[]) Subdirectories of @d.
- */
-function listDirs(dir) {
-    return readdirSync(dir)
-            .map(it => join(dir, it))
-            .filter(it => lstatSync(it).isDirectory());
-}
+const listDirs = require('./listDirs');
 
 /** List files (and subdirectories) in target directory @dir. NOT recursive.
  * @param dir - (string) Full or relative path of target directory.
