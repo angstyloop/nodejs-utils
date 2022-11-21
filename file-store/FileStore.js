@@ -1,69 +1,78 @@
 const { createWriteStream, createReadStream, unlink,
         rmSync, existsSync, readFileSync, writeFileSync } = require('fs');
 const { createHash, randomUUID } = require('crypto');
+const { join } = require('path');
 
 /** Pseudo-node for FileStore. Only one TaskQueueWorker will be given a
  * FileStore. That is, only one Thread will be allowed to read and write files
  * to the FileStore at root ("/").
  */
 class FileStore {
-    // PRIVATE
+    constructor(rootDirectory) {
+        /** The root directory of this file store. This path is prepended to
+         * the fileName arguments of FileStore methods.
+         */
+        this.rootDirectory = rootDirectory || '/tmp';
 
-    /** A set containing the unique fileIds of files in the store.
-     */
-    fileIds = new Set();
+        /** A set containing the unique fileIds of files in the store.
+         */
+        this.fileIds = new Set();
 
-    /** An object whose entries are of the form
-     *      fileId: filePath 
-     */
-    filePaths = {};
+        /** An object whose entries are of the form
+         *      fileId: fileName 
+         */
+        this.fileNames = {};
 
-    /** An object mapping filePaths back to fileIds.
-     */
-    _fileIdsByPath = {};
+        /** An object mapping fileNames back to fileIds.
+         */
+        this._fileIdsByName = {};
 
-    /** An object whose entries are of the form
-     *      fileId: fileHash 
-     */
-    fileHashes = {};
+        /** An object whose entries are of the form
+         *
+         *      fileId: fileHash this.
+         *
+         */
+        this.fileHashes = {};
 
-    /** Contains the work-in-progress hashes of files being incrementally
-     * updated with [[`FileStore#write`]].
-     */
-    _fileHashObjects = {};
+        /** Contains the work-in-progress hashes of files being incrementally
+         * updated with [[`FileStore#write`]].
+         */
+        this._fileHashObjects = {};
 
-    /** Currently open read-only file streams.
-     */
-    readStreams = {};
+        /** Currently open read-only file streams.
+         */
+        this.readStreams = {};
 
-    /** Currently open write-only file streams.
-     */
-    writeStreams = {};
+        /** Currently open write-only file streams.
+         */
+        this.writeStreams = {};
 
-    /** Create a new empty in this FileStore at @filePath. If the
+    }
+
+    /** Create a new empty in this FileStore at @fileName. If the
      * implementation of the store is, e.g., a file system, this is where a
      * new file actually gets added to the file system.
      *
-     * @param filePath - (string) The desired path to the new empty file in
+     * @param fileName - (string) The desired path to the new empty file in
      *                   the FileStore.
      *
      * @return (Promise<string>) resolve to FileId
      */
-    createNewEmptyFile(filePath) {
+    createNewEmptyFile(fileName) {
         return new Promise((resolve, reject) => {
-            // If @_fileIdsByPath[@filePath] is not undefined, re-use the
-            // existing fileId and filePath, since they are both a Primary ID
+            // If @_fileIdsByName[@fileName] is not undefined, re-use the
+            // existing fileId and fileName, since they are both a Primary ID
             // for the file. Otherwise, create a new FileId, and add update
 
-            // @fileIds, @filePaths, and @fileIdsByPath.
+            // @fileIds, @fileNames, and @fileIdsByName.
             let id = '';
-            if (this._fileIdsByPath[filePath]) {
-                id = this._fileIdsByPath[filePath];
+            if (this._fileIdsByName[fileName]) {
+                id = this._fileIdsByName[fileName];
             } else {
                 id = randomUUID();
                 this.fileIds.add(id);
-                this.filePaths[id] = filePath;
-                this._fileIdsByPath[filePath] = id;
+                this.fileNames[id] = fileName;
+                this._fileIdsByName[fileName] = id;
             }
         
             // Close old write stream if it exists.
@@ -72,7 +81,10 @@ class FileStore {
                 this.writeStreams[id].close();
             }
 
-            // Create a new empty file at filePath (possibly overwriting).
+            // Create the filePath string by joining @rootDirectory to @fileName
+            const filePath = join(this.rootDirectory, fileName);
+
+            // Create a new empty file at fileName (possibly overwriting).
             this.writeStreams[id] = createWriteStream(filePath)
                                         .on('open', () => {
                                             resolve(id);
@@ -97,7 +109,7 @@ class FileStore {
             // add fileId: fileHashes entry
             const hash = createHash('sha256').setEncoding('hex');
 
-            // open a readStream to the filePath for fileId if one doesn't
+            // open a readStream to the fileName for fileId if one doesn't
             // exist.
             this.getOrCreateReadStream(id)
                 .on('data', (data) => {
@@ -114,16 +126,14 @@ class FileStore {
         });
     }
 
-    // PUBLIC
-
     toString() {
-        const { fileIds, filePaths, fileHashes, _fileIdsByPath } = this;
+        const { fileIds, fileNames, fileHashes, _fileIdsByName } = this;
         const size = this.getSize();
         const numberOfReadStreams = Object.keys(this.readStreams).length;
         const numberOfWriteStreams = Object.keys(this.writeStreams).length;
         return JSON.stringify({
-                fileIds: [...fileIds], filePaths, fileHashes, size,
-                numberOfReadStreams, numberOfWriteStreams, _fileIdsByPath
+                fileIds: [...fileIds], fileNames, fileHashes, size,
+                numberOfReadStreams, numberOfWriteStreams, _fileIdsByName
         });
     }
 
@@ -171,19 +181,19 @@ class FileStore {
         return createHash('sha256').setEncoding('hex');
     }
 
-    /* Write from @inputStream to the file at @filePath. If the file exists,
+    /* Write from @inputStream to the file at @fileName. If the file exists,
      * overwrite it. Otherwise, create a new file and write to it. Compute
      * the new hash of the file in either case.
      *
-     * @param filePath - (string) Desired path to the file in this FileStore.
+     * @param fileName - (string) Desired path to the file in this FileStore.
      *
      * @param inputStream - (Stream) Data will be piped from @inputStream to the
-     *                      file at @filePath.
+     *                      file at @fileName.
      *
      * @return (Promise<string>) Promise resolves to FileId.
      */
-    async writeFile(filePath, inputStream) {
-        const id = await this.createNewEmptyFile(filePath);
+    async writeFile(fileName, inputStream) {
+        const id = await this.createNewEmptyFile(fileName);
         return new Promise((resolve, reject) => {
             const hash = this._createHash();
             inputStream
@@ -268,7 +278,8 @@ class FileStore {
      //TODO make async
     getOrCreateReadStream(id) {
         if (!this.readStreams[id]) {
-            this.readStreams[id] = createReadStream(this.filePaths[id]);
+            this.readStreams[id] = createReadStream(join('/tmp', 
+                                                         this.fileNames[id]));
         }
         return this.readStreams[id];
     }
@@ -309,7 +320,8 @@ class FileStore {
      */
     async deleteFile(id) {
         return new Promise((resolve, reject) => {
-            unlink(this.filePaths[id], (e) => {
+            const filePath = join(this.rootDirectory, this.fileNames[id]);
+            unlink(filePath, (e) => {
                 if (e) {
                     reject(e);
                 }
@@ -317,11 +329,11 @@ class FileStore {
                 // Close any open readable or writable streams
                 this.close(id);
 
-                // remove filePath from _filePaths (a set)
-                delete this._fileIdsByPath[this.filePaths[id]];
+                // remove fileName from _fileNames (a set)
+                delete this._fileIdsByName[this.fileNames[id]];
 
-                // remove entry from filePaths
-                delete this.filePaths[id];
+                // remove entry from fileNames
+                delete this.fileNames[id];
 
                 // remove entry from fileHashes
                 delete this.fileHashes[id];
@@ -356,12 +368,12 @@ async function test_FileStore() {
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             try {
                 const it = new FileStore();
-                filePath = `/tmp/test_FileStore.1.${randomUUID()}`;
-                await it.createNewEmptyFile(filePath);
-                if (existsSync(filePath)) {
+                fileName = `test_FileStore.1.${randomUUID()}`;
+                await it.createNewEmptyFile(fileName);
+                if (existsSync(join('/tmp', fileName))) {
                     pass = true;
                 }
             } catch (e) {
@@ -372,18 +384,18 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             try {
                 const it = new FileStore();
-                filePath = `/tmp/test_FileStore.2.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.2.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName);
                 if (/^.+$/.test(id)) {
                     pass = true;
                 }
@@ -395,18 +407,18 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             try {
                 const it = new FileStore();
-                filePath = `/tmp/test_FileStore.3.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.3.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName);
                 if (!it.fileHashes[id]) {
                     pass = true;
                 }
@@ -418,18 +430,18 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             try {
                 const it = new FileStore();
-                filePath = `/tmp/test_FileStore.4.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.4.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName);
                 const hash = await it.updateHash(id);
                 if (hash && hash === it.fileHashes[id]) {
                     pass = true;
@@ -442,18 +454,18 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             try {
                 const it = new FileStore();
-                filePath = `/tmp/test_FileStore.5.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.5.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName);
                 it.close(id);
                 if (!it.writeStreams[id] && !it.readStreams[id]) {
                     pass = true;
@@ -466,18 +478,18 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             try {
                 const it = new FileStore();
-                filePath = `/tmp/test_FileStore.6.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.6.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName);
                 it.closeAll();
                 if (!it.writeStreams[id] && !it.readStreams[id]) {
                     pass = true;
@@ -490,18 +502,18 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             try {
                 const it = new FileStore;
-                filePath = `/tmp/test_FileStore.7.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.7.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName);
                 if (it.getSize() === 1) {
                     pass = true;
                 }
@@ -513,34 +525,34 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath1 = '';
-            let filePath2 = '';
+            let fileName1 = '';
+            let fileName2 = '';
             let testMessage = "test";
             try {
                 // Create a FileStore.
                 const it = new FileStore;
                 // Define the test file paths.
-                filePath1 = `/tmp/test_FileStore.8.1.${randomUUID()}`;
-                filePath2 = `/tmp/test_FileStore.8.2.${randomUUID()}`;
-                // Create a new empty file, fileId, and filePath in the
+                fileName1 = `test_FileStore.8.1.${randomUUID()}`;
+                fileName2 = `test_FileStore.8.2.${randomUUID()}`;
+                // Create a new empty file, fileId, and fileName in the
                 // FileStore.
-                const id = await it.createNewEmptyFile(filePath1);
+                const id = await it.createNewEmptyFile(fileName1);
                 // Write a test message to the second test file (the one
                 // outside the store)
-                writeFileSync(filePath2, testMessage, { encoding: 'utf8', flag: 'w' });
+                writeFileSync(join('/tmp', fileName2), testMessage, { encoding: 'utf8', flag: 'w' });
                 // Create a read stream to the second test file.
-                const inputStream = createReadStream(filePath2);;
+                const inputStream = createReadStream(join('/tmp', fileName2));
                 // Call FileStore#writeFile to write the contents of the
                 // second file (inputStream, the test message) to the first
                 // file.
-                await it.writeFile(filePath1, inputStream);
+                await it.writeFile(fileName1, inputStream);
                 it.close(id);
                 // Compute the new hash of the first file (the one in the
                 // store).
@@ -557,18 +569,18 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath1)) {
-                rmSync(filePath1);
+            if (existsSync(join('/tmp', fileName1))) {
+                rmSync(join('/tmp', fileName1));
             }
-            if (existsSync(filePath2)) {
-                rmSync(filePath2);
+            if (existsSync(join('/tmp', fileName2))) {
+                rmSync(join('/tmp', fileName2));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath1 = '';
-            let filePath2 = '';
+            let fileName1 = '';
+            let fileName2 = '';
             let testMessage1 = "test1";
             let testMessage2 = "test2";
             let oldHash = '';
@@ -577,26 +589,26 @@ async function test_FileStore() {
                 // Create a FileStore.
                 const it = new FileStore;
                 // Define the test file paths.
-                filePath1 = `/tmp/test_FileStore.9.1.${randomUUID()}`;
-                filePath2 = `/tmp/test_FileStore.9.2.${randomUUID()}`;
+                fileName1 = `test_FileStore.9.1.${randomUUID()}`;
+                fileName2 = `test_FileStore.9.2.${randomUUID()}`;
                 // Create a write stream to the second test file, which is not
                 // in the FileStore.
-                let writeStream = createWriteStream(filePath2);
+                let writeStream = createWriteStream(join('/tmp', fileName2));
                 // Write a test message to the second test file (the one
                 // outside the store)
-                writeFileSync(filePath2, testMessage1, { encoding: 'utf8', flag: 'w' });
+                writeFileSync(join('/tmp', fileName2), testMessage1, { encoding: 'utf8', flag: 'w' });
                 // Create a read stream to the second test file.
-                let inputStream = createReadStream(filePath2);
+                let inputStream = createReadStream(join('/tmp', fileName2));
                 // Call FileStore#writeFile to write the contents of the
                 // second file (inputStream, the test message) to the first
                 // file.
-                const id = await it.writeFile(filePath1, inputStream);
+                const id = await it.writeFile(fileName1, inputStream);
                 // Note the file hash
                 oldHash = it.fileHashes[id];
                 // Write a new message to the second test file.
-                writeFileSync(filePath2, testMessage2, { encoding: 'utf8', flag: 'w' });
-                inputStream = createReadStream(filePath2);
-                await it.writeFile(filePath1, inputStream);
+                writeFileSync(join('/tmp', fileName2), testMessage2, { encoding: 'utf8', flag: 'w' });
+                inputStream = createReadStream(join('/tmp', fileName2));
+                await it.writeFile(fileName1, inputStream);
                 newHash = it.fileHashes[id];
                 //console.log(`newHash=${newHash}`);
                 //console.log(`oldHash=${oldHash}`);
@@ -611,21 +623,21 @@ async function test_FileStore() {
             if (!pass && err) {
                 console.error(err);
             }
-            if (existsSync(filePath1)) {
-                rmSync(filePath1);
+            if (existsSync(join('/tmp', fileName1))) {
+                rmSync(join('/tmp', fileName1));
             }
-            if (existsSync(filePath2)) {
-                rmSync(filePath2);
+            if (existsSync(join('/tmp', fileName2))) {
+                rmSync(join('/tmp', fileName2));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             try {
                 const it = new FileStore();
-                filePath = `/tmp/test_FileStore.10.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.10.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName);
                 if (it.getReadStream(id)) {
                     pass = true;
                 }
@@ -637,8 +649,8 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
@@ -677,18 +689,18 @@ async function test_FileStore() {
         async () => {
             let pass = false;
             let err = '';
-            let filePath1 = '';
-            let filePath2 = '';
+            let fileName1 = '';
+            let fileName2 = '';
             const testMessage = 'test';
             try {
                 // Prepare a store with one test file in it.
                 const it = new FileStore();
-                filePath1 = `/tmp/test_FileStore.13.${randomUUID()}`;
-                filePath2 = `/tmp/test_FileStore.13.${randomUUID()}`;
-                writeFileSync(filePath2, testMessage,
+                fileName1 = `test_FileStore.13.${randomUUID()}`;
+                fileName2 = `test_FileStore.13.${randomUUID()}`;
+                writeFileSync(join('/tmp', fileName2), testMessage,
                               { encoding: 'utf8', flag: 'w' });
-                const inputStream = createReadStream(filePath2);
-                const id = await it.writeFile(filePath1, inputStream);
+                const inputStream = createReadStream(join('/tmp', fileName2));
+                const id = await it.writeFile(fileName1, inputStream);
                 inputStream.close();
                 // Make sure streams are closed before testing
                 // getOrCreateReadStream
@@ -704,46 +716,46 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(e);
             }
-            if (existsSync(filePath1)) {
-                rmSync(filePath1);
+            if (existsSync(join('/tmp', fileName1))) {
+                rmSync(join('/tmp', fileName1));
             }
-            if (existsSync(filePath2)) {
-                rmSync(filePath2);
+            if (existsSync(join('/tmp', fileName2))) {
+                rmSync(join('/tmp', fileName2));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath1 = '';
-            let filePath2 = '';
+            let fileName1 = '';
+            let fileName2 = '';
             let testMessage1 = "test1";
             let testMessage2 = "test2";
             try {
                 // Prepare a FileStore with one test file in it, and a test
                 // file outside the store.
                 const it = new FileStore();
-                filePath1 = `/tmp/test_FileStore.14.1.${randomUUID()}`;
-                filePath2 = `/tmp/test_FileStore.14.2.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath1);
-                writeFileSync(filePath2, testMessage1,
+                fileName1 = `test_FileStore.14.1.${randomUUID()}`;
+                fileName2 = `test_FileStore.14.2.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName1);
+                writeFileSync(join('/tmp', fileName2), testMessage1,
                               { encoding: 'utf8', flag: 'w' });
                 let inputStream = await new Promise((resolve, reject) => {
-                    const it = createReadStream(filePath2)
+                    const it = createReadStream(join('/tmp', fileName2))
                         .on('open', () => {
                             resolve(it);
                         });
                 });
-                await it.writeFile(filePath1, inputStream);
+                await it.writeFile(fileName1, inputStream);
                 inputStream.close();
                 it.close(id);
                 // Write different data to the file outside the store
-                writeFileSync(filePath2, testMessage2,
+                writeFileSync(join('/tmp', fileName2), testMessage2,
                               { encoding: 'utf8', flag: 'w' });
                 // Read the data from the file in the store into the file
                 // outside the store, overwriting the file outside the store
                 // with the data it originally had.
                 const writeStream = await new Promise((resolve, reject) => {
-                    const it = createWriteStream(filePath2)
+                    const it = createWriteStream(join('/tmp', fileName2))
                         .on('open', () => {
                             resolve(it);
                         });
@@ -753,7 +765,7 @@ async function test_FileStore() {
                 it.close(id);
                 // The test passes if the file outside the store contains the
                 // original test message.
-                const msg = readFileSync(filePath2,
+                const msg = readFileSync(join('/tmp', fileName2),
                                          { encoding: 'utf8', flag: 'r' });
                 //console.log(`expected=${msg}`);
                 //console.log(`actual=${testMessage1}`);
@@ -768,43 +780,43 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath1)) {
-                rmSync(filePath1);
+            if (existsSync(join('/tmp', fileName1))) {
+                rmSync(join('/tmp', fileName1));
             }
-            if (existsSync(filePath2)) {
-                rmSync(filePath2);
+            if (existsSync(join('/tmp', fileName2))) {
+                rmSync(join('/tmp', fileName2));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath1 = '';
-            let filePath2 = '';
+            let fileName1 = '';
+            let fileName2 = '';
             let testMessage1 = 'test1';
             let testMessage2 = 'test2';
             try {
                 const it = new FileStore();
-                filePath1 = `/tmp/test_FileStore.15.1.${randomUUID()}`;
-                filePath2 = `/tmp/test_FileStore.15.2.${randomUUID()}`;
-                const id = await it.createNewEmptyFile(filePath1); 
-                writeFileSync(filePath2, testMessage1,
+                fileName1 = `test_FileStore.15.1.${randomUUID()}`;
+                fileName2 = `test_FileStore.15.2.${randomUUID()}`;
+                const id = await it.createNewEmptyFile(fileName1); 
+                writeFileSync(join('/tmp', fileName2), testMessage1,
                               { encoding: 'utf8', flag: 'w' });
-                let inputStream = createReadStream(filePath2);
-                await it.writeFile(filePath1, inputStream);
+                let inputStream = createReadStream(join('/tmp', fileName2));
+                await it.writeFile(fileName1, inputStream);
                 inputStream.close();
                 it.close(id);
                 // Write new data to the file outside the store...
-                writeFileSync(filePath2, testMessage2,
+                writeFileSync(join('/tmp', fileName2), testMessage2,
                               { encoding: 'utf8', flag: 'w' });
                 // Then overwrite the new data in the file outside the store
                 // with the old data from the file in the store.
-                const writeStream = createWriteStream(filePath2);
+                const writeStream = createWriteStream(join('/tmp', fileName2));
                 await it.readFile(id, writeStream);
                 writeStream.close();
                 it.close(id);
                 // The test passes if the file outside the store contains the
                 // original test message.
-                const msg = readFileSync(filePath2,
+                const msg = readFileSync(join('/tmp', fileName2),
                                          { encoding: 'utf8', flag: 'r' });
                 //console.log(`expected=${msg}`);
                 //console.log(`actual=${testMessage1}`);
@@ -819,30 +831,30 @@ async function test_FileStore() {
             if (!pass) {
                 console.error(err);
             }
-            if (existsSync(filePath1)) {
-                rmSync(filePath1);
+            if (existsSync(join('/tmp', fileName1))) {
+                rmSync(join('/tmp', fileName1));
             }
-            if (existsSync(filePath2)) {
-                rmSync(filePath2);
+            if (existsSync(join('/tmp', fileName2))) {
+                rmSync(join('/tmp', fileName2));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             let it = undefined;
             let exists = false;
             try {
                 it = new FileStore();
-                filePath = `/tmp/test_FileStore.16.1.${randomUUID()}`
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.16.1.${randomUUID()}`
+                const id = await it.createNewEmptyFile(fileName);
                 await it.deleteFile(id);
-                exists = existsSync(filePath);
+                exists = existsSync(join('/tmp', fileName));
                 if (!exists &&
                         !it.fileIds.has(id) &&
-                        !it.filePaths[id] &&
+                        !it.fileNames[id] &&
                         !it.fileHashes[id] &&
-                        !it._fileIdsByPath[filePath] &&
+                        !it._fileIdsByName[fileName] &&
                         !it.readStreams[id] &&
                         !it.writeStreams[id])
                 {
@@ -859,25 +871,25 @@ async function test_FileStore() {
                 console.log(`exists=${exists}`);
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             let it = undefined;
             const testData = 'data';
             try {
                 it = new FileStore();
-                filePath = `/tmp/test_FileStore.17.1.${randomUUID()}`
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.17.1.${randomUUID()}`
+                const id = await it.createNewEmptyFile(fileName);
                 const hash1 = it.fileHashes[id];
                 await it.write(id, testData);
                 await it.close(id);
                 const hash2 = it.fileHashes[id];
-                const actual = readFileSync(filePath, { encoding: 'utf8', flag: 'r' });
+                const actual = readFileSync(join('/tmp', fileName), { encoding: 'utf8', flag: 'r' });
                 //console.log(hash1);
                 //console.log(hash2);
                 if (testData === actual) {
@@ -893,21 +905,21 @@ async function test_FileStore() {
                 console.log(`FileStore=${it.toString()}`);
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
         async () => {
             let pass = false;
             let err = '';
-            let filePath = '';
+            let fileName = '';
             let it = undefined;
             const testData1 = 'data1';
             const testData2 = 'data2';
             try {
                 it = new FileStore();
-                filePath = `/tmp/test_FileStore.18.1.${randomUUID()}`
-                const id = await it.createNewEmptyFile(filePath);
+                fileName = `test_FileStore.18.1.${randomUUID()}`
+                const id = await it.createNewEmptyFile(fileName);
                 const hash1 = it.fileHashes[id];
                 await it.write(id, testData1);
 
@@ -916,7 +928,7 @@ async function test_FileStore() {
                 // because the underlying object hash is still being updated.
 
                 const hash2 = it.fileHashes[id];
-                const actual1 = readFileSync(filePath, { encoding: 'utf8', flag: 'r' });
+                const actual1 = readFileSync(join('/tmp', fileName), { encoding: 'utf8', flag: 'r' });
                 await it.write(id, testData2);
                 await it.close(id);
 
@@ -924,7 +936,7 @@ async function test_FileStore() {
                 // string in @fileHashes will be updated.
 
                 const hash3 = it.fileHashes[id];
-                const actual2 = readFileSync(filePath, { encoding: 'utf8', flag: 'r' });
+                const actual2 = readFileSync(join('/tmp', fileName), { encoding: 'utf8', flag: 'r' });
                 //console.log(hash1);
                 //console.log(hash2);
                 //console.log(hash3);
@@ -946,8 +958,8 @@ async function test_FileStore() {
                 console.log(`FileStore=${it.toString()}`);
                 console.error(err);
             }
-            if (existsSync(filePath)) {
-                rmSync(filePath);
+            if (existsSync(join('/tmp', fileName))) {
+                rmSync(join('/tmp', fileName));
             }
         },
 
