@@ -58,7 +58,7 @@ class FileStore {
      *
      * @return (Promise<string>) resolve to FileId
      */
-    createNewEmptyFile(fileName) {
+    async createNewEmptyFile(fileName) {
         return new Promise((resolve, reject) => {
             // If @_fileIdsByName[@fileName] is not undefined, re-use the
             // existing fileId and fileName, since they are both a Primary ID
@@ -107,7 +107,7 @@ class FileStore {
 
             // generate file hash
             // add fileId: fileHashes entry
-            const hash = createHash('sha256').setEncoding('hex');
+            const hash = createHash('sha256').setEncoding('utf8');
 
             // open a readStream to the fileName for fileId if one doesn't
             // exist.
@@ -127,14 +127,31 @@ class FileStore {
     }
 
     toString() {
-        const { fileIds, fileNames, fileHashes, _fileIdsByName } = this;
+        const { rootDirectory, fileIds, fileNames, fileHashes, _fileIdsByName } = this;
         const size = this.getSize();
         const numberOfReadStreams = Object.keys(this.readStreams).length;
         const numberOfWriteStreams = Object.keys(this.writeStreams).length;
-        return JSON.stringify({
+        return JSON.stringify({ rootDirectory,
                 fileIds: [...fileIds], fileNames, fileHashes, size,
                 numberOfReadStreams, numberOfWriteStreams, _fileIdsByName
         });
+    }
+
+    static fromString(json) {
+        try {
+            const data = JSON.parse(json);
+            const { rootDirectory, fileIds, fileNames, fileHashes, _fileIdsByName } = data;
+            const it = new FileStore(rootDirectory);
+            it.fileIds = new Set(fileIds);
+            it.fileNames = fileNames;
+            it.fileHashes = fileHashes;
+            it._fileIdsByName = _fileIdsByName;
+            console.log(JSON.stringify(it));
+            return it;
+        } catch(e) {
+            console.error(e);
+            return undefined;
+        }
     }
 
     /** Close any open streams (readable or writable) for a FileId @id.
@@ -178,7 +195,7 @@ class FileStore {
     }
 
     _createHash() {
-        return createHash('sha256').setEncoding('hex');
+        return createHash('sha256').setEncoding('utf8');
     }
 
     /* Write from @inputStream to the file at @fileName. If the file exists,
@@ -209,6 +226,12 @@ class FileStore {
         });
     }
 
+    static async copyFile(tempFileStore, fileStore, sourceId, targetId) {
+        const inputStream = tempFileStore.getOrCreateReadStream(sourceId);
+        const targetName = fileStore.fileNames[targetId];
+        await fileStore.writeFile(targetName, inputStream);
+    }
+
     /** Append a chunk of data to the file with @fileId. The file must already
      * exist, with an open write stream, e.g., via a call to
      * [[`createNewEmptyFile`]] or [[`writeFile`]].
@@ -224,18 +247,19 @@ class FileStore {
             if (!this.writeStreams[fileId]) {
                 reject(new Error(`Unknown FileId: "${fileId}".`));
             }
-            // If there is no hash object currently in progress for the serious
-            // of writes that contains this write, create one, and attach
-            // a handler to the write stream to update the hash when the write
-            // stream closes.
-            if (!this._fileHashObjects[fileId]) {
-                this._fileHashObjects[fileId] = this._createHash();
-            }
             this.writeStreams[fileId]
                     .write(data, e => {
                         if (e) {
                             reject(e);
                         } else {
+                            // If there is no hash object currently in progress for the serious
+                            // of writes that contains this write, create one, and attach
+                            // a handler to the write stream to update the hash when the write
+                            // stream closes.
+                            if (!this._fileHashObjects[fileId]) {
+                                this._fileHashObjects[fileId] = this._createHash();
+                            }
+
                             // Incrementally update the hash object for this
                             // series of writes.
                             this._fileHashObjects[fileId].update(data);
@@ -278,8 +302,9 @@ class FileStore {
      //TODO make async
     getOrCreateReadStream(id) {
         if (!this.readStreams[id]) {
-            this.readStreams[id] = createReadStream(join('/tmp', 
-                                                         this.fileNames[id]));
+            this.readStreams[id] =
+                    createReadStream(join(this.rootDirectory, 
+                                          this.fileNames[id]));
         }
         return this.readStreams[id];
     }
@@ -355,12 +380,12 @@ async function test_FileStore() {
             let pass = false;
             let err = '';
             try {
-                const it = new FileStore();
-                pass = true;
+                const it = FileStore.fromString(new FileStore().toString());
+                pass = it.toString() === new FileStore().toString();
             } catch (e) {
                 err = e;
             }
-            console.log([0], pass ? 'PASS' : 'FAIL', "It runs.");
+            console.log([0], pass ? 'PASS' : 'FAIL', "It transforms to and from a String.");
             if (!pass) {
                 console.error(err);
             }
@@ -866,9 +891,9 @@ async function test_FileStore() {
             console.log([16], pass ? 'PASS' : 'FAIL',
                     'It deletes a file.');
             if (!pass) {
-                console.log("DEBUG INFO");
-                console.log(`FileStore=${it.toString()}`);
-                console.log(`exists=${exists}`);
+                //console.log("DEBUG INFO");
+                //console.log(`FileStore=${it.toString()}`);
+                //console.log(`exists=${exists}`);
                 console.error(err);
             }
             if (existsSync(join('/tmp', fileName))) {
@@ -901,8 +926,8 @@ async function test_FileStore() {
             console.log([17], pass ? 'PASS' : 'FAIL',
                 'It writes and hashes incrementally.');
             if (!pass) {
-                console.log("DEBUG INFO");
-                console.log(`FileStore=${it.toString()}`);
+                //console.log("DEBUG INFO");
+                //console.log(`FileStore=${it.toString()}`);
                 console.error(err);
             }
             if (existsSync(join('/tmp', fileName))) {
@@ -954,8 +979,8 @@ async function test_FileStore() {
             console.log([18], pass ? 'PASS' : 'FAIL',
                 'It writes and hashes incrementally. (2)');
             if (!pass) {
-                console.log("DEBUG INFO");
-                console.log(`FileStore=${it.toString()}`);
+                //console.log("DEBUG INFO");
+                //console.log(`FileStore=${it.toString()}`);
                 console.error(err);
             }
             if (existsSync(join('/tmp', fileName))) {
@@ -973,4 +998,4 @@ module.exports = FileStore;
 /** To test FileSTore, uncomment the "test_" line and run:
 node FileStore.js
  */
-test_FileStore();
+//test_FileStore();
